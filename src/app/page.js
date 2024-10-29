@@ -1,97 +1,120 @@
+// y68ygrn6v2s05qw1wxcz6aa
 "use client";
 import { SimliClient } from "simli-client";
-import React, { useRef } from "react";
-import audioUrl from "../assets/aivoice.wav";
+import React, { useEffect, useRef, useState } from "react";
+import { textToAudioPCM } from "@/utils/audioConverter";
+import audioUrl from "../assets/simli-demo.mp3";
+import { AudioContext } from "standardized-audio-context";
 
 function Home() {
-    const videoRef = useRef(null);
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const simliClient = new SimliClient();
+  // const [isInitialized, setIsInitialized] = useState(false);
 
-    const simliConfig = {
-        apiKey: "",
-        faceID: "31e5dd74-a7a2-4a92-86dc-69e9c1cd7640",
-        handleSilence: true,
-        maxSessionLength: 3600,
-        maxIdleTime: 600,
-        videoRef: videoRef,
-    };
+  const videoRef = useRef(null);
+  const audioRef = useRef(null);
+  // const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const simliClient = new SimliClient();
 
-    simliClient.on("connected", () => {
-        console.log("SimliClient is now connected!");
-        initializeClient();
-    });
+  const simliConfig = {
+    apiKey: "",
+    faceID: "tmp9i8bbq7c",
+    handleSilence: true,
+    maxSessionLength: 3600,
+    maxIdleTime: 600,
+    videoRef: videoRef,
+    audioRef: audioRef,
+  };
 
-    simliClient.on("disconnected", () => {
-        console.log("SimliClient has disconnected!");
-    });
+  simliClient.on("connected", () => {
+    console.log("SimliClient is now connected!");
+    // initializeClient();
+  });
 
-    simliClient.on("failed", () => {
-        console.log("SimliClient has failed to connect!");
-    });
+  simliClient.on("disconnected", () => {
+    console.log("SimliClient has disconnected!");
+  });
 
-    // Function to convert AudioBuffer to PCM16 format
-    function convertToPCM16(audioBuffer) {
-        const channelData = audioBuffer.getChannelData(0); // Get first channel
-        const pcm16Data = new Int16Array(channelData.length);
-        for (let i = 0; i < channelData.length; i++) {
-            pcm16Data[i] = Math.max(-1, Math.min(1, channelData[i])) < 0 
-                ? Math.max(-32768, Math.floor(channelData[i] * 32768)) 
-                : Math.min(32767, Math.ceil(channelData[i] * 32768));
-        }
-        return pcm16Data.buffer;
+  simliClient.on("failed", () => {
+    console.log("SimliClient has failed to connect!");
+  });
+
+  // Utility function to downsample and chunk the audio data
+  const downsampleAndChunkAudio = async (audioUrl, chunkSizeInMs = 100) => {
+    // Create an AudioContext with a target sample rate of 16kHz
+    const audioContext = new AudioContext({ sampleRate: 16000 });
+
+    // Fetch and decode audio file
+    const response = await fetch(audioUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    // Extract PCM data from audio buffer
+    const rawPCM = audioBuffer.getChannelData(0); // assuming mono audio for simplicity
+
+    // Calculate chunk size in samples (16-bit PCM)
+    const chunkSizeInSamples = (chunkSizeInMs / 1000) * 16000;
+    const pcmChunks = [];
+
+    // Loop through the raw PCM data and create chunks
+    for (let i = 0; i < rawPCM.length; i += chunkSizeInSamples) {
+      const chunk = rawPCM.subarray(i, i + chunkSizeInSamples);
+
+      // Convert each chunk to Int16Array PCM data
+      const int16Chunk = new Int16Array(chunk.length);
+      for (let j = 0; j < chunk.length; j++) {
+        int16Chunk[j] = Math.max(-32768, Math.min(32767, chunk[j] * 32768));
+      }
+
+      pcmChunks.push(int16Chunk);
     }
 
-    // Send audio data in 6KB chunks
-    async function sendAudioDataInChunks(arrayBuffer) {
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const pcm16Data = convertToPCM16(audioBuffer);
-        const CHUNK_SIZE = 6000; // 6KB chunk size
+    return pcmChunks;
+  };
 
-        for (let i = 0; i < pcm16Data.byteLength; i += CHUNK_SIZE) {
-            const chunk = new Uint8Array(pcm16Data.slice(i, i + CHUNK_SIZE));
-            console.log(`Sending chunk of size: ${chunk.length} bytes`); // Log chunk size
-            simliClient.sendAudioData(chunk);
-        }
+  async function initializeClient() {
+    try {
+      simliClient.Initialize(simliConfig);
+      await simliClient.start();
+      // setIsInitialized(true);
 
-        console.log("Sent PCM16 audio data successfully in chunks.");
+      // Send audio data in chunks
+      const pcmChunks = await downsampleAndChunkAudio(audioUrl);
+
+      const interval = setInterval(() => {
+        const chunk = pcmChunks.shift();
+        // if (isInitialized && chunk) {
+          chunk && simliClient.sendAudioData(chunk);
+        // }
+        if (!pcmChunks.length) clearInterval(interval);
+        console.log("PCM ", chunk);
+      }, 120);
+    } catch(error){
+      alert(error);
     }
+  }
 
-    async function initializeClient() {
-        const response = await fetch(audioUrl);
-        const arrayBuffer = await response.arrayBuffer();
-
-        // Make a copy of the arrayBuffer for decoding to avoid detachment
-        const decodingBuffer = arrayBuffer.slice(0);
-
-        simliClient.Initialize(simliConfig);
-        await simliClient.start();
-
-        // Send audio data in chunks
-        sendAudioDataInChunks(arrayBuffer);
-
-        // Optional: Client-side playback for verification with a copied buffer
-        audioContext.decodeAudioData(
-            decodingBuffer,
-            (audioBuffer) => {
-                const audioSource = audioContext.createBufferSource();
-                audioSource.buffer = audioBuffer;
-                audioSource.connect(audioContext.destination);
-                audioSource.start();
-            },
-            (error) => console.error("Error decoding audio data:", error)
-        );
-    }
-
-    return (
-        <div>
-            <div className="border-red-100 border w-1/4">
-                <video ref={videoRef} autoPlay playsInline></video>
-            </div>
-            <button onClick={initializeClient}>Start connection</button>
-            <button onClick={() => simliClient.close()}>Stop connection</button>
-        </div>
-    );
+  return (
+    <div className="wrap">
+      <div className="videoBox">
+        <video ref={videoRef} autoPlay playsInline></video>
+        <audio ref={audioRef} autoPlay></audio>
+      </div>
+      <div className="btnWrap">
+        <button
+          onClick={initializeClient}
+          className="btn"
+        >
+          Start connection
+        </button>
+        <button
+          onClick={() => (simliClient.close())}
+          className="btn"
+        >
+          Stop connection
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default Home;
+
